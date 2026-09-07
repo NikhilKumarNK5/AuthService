@@ -1,18 +1,25 @@
 package org.example.userauthservice.services;
 
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtParser;
+import io.jsonwebtoken.Jwts;
+import org.antlr.v4.runtime.misc.Pair;
 import org.example.userauthservice.exceptions.PasswordMismatchException;
 import org.example.userauthservice.exceptions.UserAlreadyExistsException;
 import org.example.userauthservice.exceptions.UserNotRegisteredException;
 import org.example.userauthservice.models.Role;
+import org.example.userauthservice.models.Status;
 import org.example.userauthservice.models.User;
+import org.example.userauthservice.models.UserSession;
 import org.example.userauthservice.repos.RoleRepo;
+import org.example.userauthservice.repos.SessionRepo;
 import org.example.userauthservice.repos.UserRepo;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
+import javax.crypto.SecretKey;
+import java.util.*;
 
 @Service
 public class AuthService implements IAuthService {
@@ -22,6 +29,15 @@ public class AuthService implements IAuthService {
 
     @Autowired
     private RoleRepo roleRepo;
+
+    @Autowired
+    private SessionRepo sessionRepo;
+
+    @Autowired
+    private BCryptPasswordEncoder bCryptPasswordEncoder;
+
+    @Autowired
+    private SecretKey secretKey;
 
     @Override
     public User signUp(String email, String password, String name, String phoneNumber) {
@@ -38,7 +54,8 @@ public class AuthService implements IAuthService {
 
         User user = new User();
         user.setEmail(email);
-        user.setPassword(password);  //this should not be passed as raw password
+//        user.setPassword(password);  //this should not be passed as raw password
+        user.setPassword(bCryptPasswordEncoder.encode(password));
         user.setPhoneNumber(phoneNumber);
         user.setName(name);
 
@@ -61,7 +78,7 @@ public class AuthService implements IAuthService {
     }
 
     @Override
-    public User login(String email, String password) {
+    public Pair<User, String> login(String email, String password) {
 
         Optional<User> userOptional = userRepo.findByEmail(email);
         if (userOptional.isEmpty()) {
@@ -69,10 +86,68 @@ public class AuthService implements IAuthService {
         }
 
         User user = userOptional.get();
-        if(!user.getPassword().equals(password)) {
-            throw new PasswordMismatchException("Please use correct credentials");
+//        if(!user.getPassword().equals(password)) {
+//            throw new PasswordMismatchException("Please use correct credentials");
+//        }
+
+        if(!bCryptPasswordEncoder.matches(password, user.getPassword())) {
+            throw  new PasswordMismatchException("Please use correct credentials");
         }
 
-        return user;
+        // Generating JWT
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("user_id", user.getId());
+        claims.put("issuer", "nik");
+        Long currentTime = System.currentTimeMillis();
+        claims.put("iat", currentTime);
+        claims.put("exp", currentTime + 100000);
+
+        List<Role> roles = user.getRoles();
+        List<String> roleValues = new ArrayList<>();
+        for (Role role : roles) {
+            roleValues.add(role.getValue());
+        }
+
+        claims.put("user_access", roleValues);
+
+//        MacAlgorithm algorithm = Jwts.SIG.HS256;
+//        SecretKey secretKey = algorithm.key().build();
+
+        String token = Jwts.builder().claims(claims).signWith(secretKey).compact();
+
+        UserSession userSession = new UserSession();
+        userSession.setUser(user);
+        userSession.setToken(token);
+        userSession.setStatus(Status.ACTIVE);
+        sessionRepo.save(userSession);
+
+        return new Pair<>(user, token);
+    }
+
+    public Boolean validateToken(String token) {
+        Optional<UserSession> userSessionOptional = sessionRepo.findByToken(token);
+
+        if(userSessionOptional.isEmpty()) {
+            return false;
+        }
+
+        UserSession userSession = userSessionOptional.get();
+
+        JwtParser jwtParser = Jwts.parser().verifyWith(secretKey).build();
+        Claims claims = jwtParser.parseSignedClaims(token).getPayload();
+
+        Long expiry = (Long) claims.get("exp");
+        Long currentTime = System.currentTimeMillis();
+        System.out.println("expiry: " + expiry);
+        System.out.println("currentTime: " + currentTime);
+
+        if(expiry < currentTime) {
+            userSession.setStatus(Status.INACTIVE);
+            sessionRepo.save(userSession);
+            System.out.println("Token has expired");
+            return false;
+        }
+
+        return true;
     }
 }
