@@ -1,9 +1,13 @@
 package org.example.userauthservice.services;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import org.antlr.v4.runtime.misc.Pair;
+import org.example.userauthservice.clients.KafkaProducerClient;
+import org.example.userauthservice.dtos.EmailDto;
 import org.example.userauthservice.exceptions.PasswordMismatchException;
 import org.example.userauthservice.exceptions.UserAlreadyExistsException;
 import org.example.userauthservice.exceptions.UserNotRegisteredException;
@@ -39,6 +43,12 @@ public class AuthService implements IAuthService {
     @Autowired
     private SecretKey secretKey;
 
+    @Autowired
+    private KafkaProducerClient kafkaProducerClient;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @Override
     public User signUp(String email, String password, String name, String phoneNumber) {
 
@@ -73,6 +83,19 @@ public class AuthService implements IAuthService {
         List<Role> roles = new ArrayList<>();
         roles.add(role);
         user.setRoles(roles);
+
+        // Put message into Kafka
+        EmailDto emailDto = new EmailDto();
+        emailDto.setTo(email);
+        emailDto.setFrom("nikhil.nikki.nk05@gmail.com");
+        emailDto.setSubject("Welcome");
+        emailDto.setBody("Problem Solver @Salesforce");
+        try {
+            String message = objectMapper.writeValueAsString(emailDto);
+            kafkaProducerClient.sendMessage("signup", message);
+        } catch (JsonProcessingException exception)  {
+            throw new RuntimeException(exception.getMessage());
+        }
 
         return userRepo.save(user);
     }
